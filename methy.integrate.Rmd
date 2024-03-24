@@ -1,0 +1,871 @@
+---
+titlD: "methylation"
+output: html_document
+
+---
+
+          
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning=FALSE, message=FALSE)
+```
+
+
+## 0.Load R package
+
+```{r}
+ps <- c("amplicon", "ggradar", "sesame", "ggpointdensity", "viridis", "vegan", "picante", "circlize", "RColorBrewer", "survival", "survminer", "reshape2", "MCPcounter", "genefilter", "GSVA", "Biobase", "stringr", "psych", "corrplot", "DESeq2", "phyloseq", "ggalluvial", "ChAMP", "pheatmap", "dplyr", "ggplot2", "ggpubr", 'xlsx', "microbiome", "bactaxR", "patchwork", "metacoder", "MicEco", "ggimage")
+
+for(i in ps){suppressWarnings(suppressMessages(library(i, character.only = T)))}; rm(i)
+
+```
+
+
+
+## 0.Make phyloseq
+
+```{r}
+setwd("D:/microbiome and methylation/source.data/16S.from.qiime")
+
+otu <- read.delim('feature-table.txt', row.names = 1, sep = '\t', stringsAsFactors = FALSE, check.names = FALSE)
+metadata <- read.table('metadata.txt', header = T, sep = '\t', row.names = 1)
+tax<- read.table('tax.txt', header = T, sep = '\t', row.names = 1)
+tree<- read.tree('tree.nwk')
+repseqFile = "rep.fasta"
+rep.seq = Biostrings::readDNAStringSet(repseqFile)
+
+otumat<- otu
+
+OTU = otu_table(otumat, taxa_are_rows = TRUE)
+taxmat<- as.matrix(tax)
+TAX = tax_table(taxmat)
+sampledata<- sample_data(metadata)
+
+
+physeq0 = merge_phyloseq(OTU, TAX)
+physeq.qh = merge_phyloseq(physeq0, sampledata, tree, rep.seq)
+physeq2 = merge_phyloseq(OTU, TAX, sampledata, tree, rep.seq)
+identical(physeq.qh, physeq2)
+
+
+##
+
+profile.asv <- subset_samples(physeq.qh, groups1 == "Profile")
+
+profile.id <-  rownames(profile.asv@otu_table@.Data)[which(profile.asv@otu_table@.Data > 0)]
+
+names <- rownames(physeq.qh@otu_table@.Data)
+physeq.qh2<- prune_taxa(names[-which(names==profile.id)], physeq.qh)
+
+##
+control.asv <- subset_samples(physeq.qh2, groups1 != "Profile" & groups2 == "control")
+control.asv2 <- subset_samples(control.asv, groups1 != "FFPE")
+control.otu <- control.asv2@otu_table@.Data
+
+pvalue<-c(rep(1,nrow(control.otu))) 
+names(pvalue) <- rownames(control.otu)
+for (i in rownames(control.otu)){
+  freq <- as.data.frame(table(control.otu[i,]))
+  count <- subset(freq, Var1 == 0)$Freq
+test <- binom.test(x= 10-count,n=10,p=0.01)
+pvalue[i] <- test[["p.value"]]
+}
+
+control.id <- names(which(pvalue < 0.05))
+
+names <- rownames(physeq.qh2@otu_table@.Data)
+physeq.qh3<- prune_taxa(names[-which(names %in% control.id)], physeq.qh2)
+
+##
+
+sub_physeq.qh4<- subset_samples(physeq.qh3, groups2 != "control")
+
+prevdf = apply(X = otu_table(sub_physeq.qh4),
+               MARGIN = ifelse(taxa_are_rows(sub_physeq.qh4), yes = 1, no = 2),
+               FUN = function(x){sum(x > 0)})
+
+physeq.5<- prune_taxa(names(which(prevdf >= 2)), sub_physeq.qh4)
+
+metadata <- read.xlsx("D:/microbiome and methylation/48km.xlsx",sheetIndex = 1, row.names = TRUE, header = TRUE)
+
+meta <- read.csv("D:/microbiome and methylation/RNA-seq/rnaseq.metadata.csv",header = T, sep = ',', row.names = 1)
+ID <- meta$id
+sample_data(physeq.5)$human <- get_variable(physeq.5, "case") %in% ID
+physeq.great<- subset_samples(physeq.5, human=="TRUE")
+rownames(meta) <- meta$ids
+meta <- meta[colnames(physeq.great@otu_table@.Data),]
+physeq.great@sam_data$bac <- meta$Group
+physeq.great@sam_data$load <- meta$bacload
+physeq.great <-  prune_taxa(taxa_sums(physeq.great) > 0, physeq.great)
+
+
+```
+
+
+## Figure.S1
+
+```{r}
+setwd("D:/microbiome and methylation/source.data/Figure.S1")
+load('physeq.great.Rdata')
+meta <- read.csv("rnaseq.metadata.csv",header = T, sep = ',', row.names = 1)
+
+col2<- c("#CC0033", "#003399")
+
+set.seed(001)
+physeq.r = rarefy_even_depth(physeq.great, sample.size =2000, replace = TRUE)
+
+s.sh <- plot_richness(physeq.r, "bac",  measures=c("Observed", "Simpson"))
+
+s.data <- s.sh$data
+sub_s.data <- subset(s.data, variable %in% c("Observed"))
+
+my_comparisons <- list(c("High", "Low"))
+
+p1 <- ggplot(data=sub_s.data, aes(x = bac, y = value, group=bac)) +
+    geom_boxplot(aes(x=bac, fill=bac)) +
+    stat_summary(aes(x=bac), fun.y=mean, geom="point", color = "white") +
+    geom_jitter(width=0.2, size=2) +
+    scale_fill_manual(values=col2) +
+    theme(title=element_text(size=14,color="#4F4F4F"))+
+    stat_compare_means(comparisons = my_comparisons, paired = FALSE, color="black")+
+    theme_classic()+ 
+    theme(axis.text.x = element_text(size=14),axis.text.y = element_text(size=14)) + 
+    theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank()) + 
+    theme(legend.title = element_blank())+ 
+    theme(legend.position='none')+
+    theme(plot.title = element_text(hjust = 0.5))+
+    labs(title= "", y="Observed ASVs", x="")
+
+sub_s.data <- subset(s.data, variable %in% c("Simpson"))
+
+my_comparisons <- list(c("High", "Low"))
+
+p2 <- ggplot(data=sub_s.data, aes(x = bac, y = value, group=bac)) +
+    geom_boxplot(aes(x=bac, fill=bac)) +
+    stat_summary(aes(x=bac), fun.y=mean, geom="point", color = "white") +
+    geom_jitter(width=0.2, size=2) +
+    scale_fill_manual(values=col2) +
+    theme(title=element_text(size=14,color="#4F4F4F"))+
+    stat_compare_means(comparisons = my_comparisons, paired = FALSE, color="black")+
+    theme_classic()+ 
+    theme(axis.text.x = element_text(size=14),axis.text.y = element_text(size=14)) + 
+    theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank()) + 
+    theme(legend.title = element_blank())+ 
+    theme(legend.position='none')+
+    theme(plot.title = element_text(hjust = 0.5))+
+    labs(title= "", y="Simpson", x="")
+
+
+
+p3 <- ggplot(data=sub_s.data, aes(x = bac, y = log10(load), group=bac)) +
+    geom_boxplot(aes(x=bac, fill=bac)) +
+    stat_summary(aes(x=bac), fun.y=mean, geom="point", color = "white") +
+    geom_jitter(width=0.2, size=2) +
+    scale_fill_manual(values=col2) +
+    theme(title=element_text(size=14,color="#4F4F4F"))+
+    stat_compare_means(comparisons = my_comparisons, paired = FALSE, color="black")+
+    theme_classic()+ 
+    theme(axis.text.x = element_text(size=14),axis.text.y = element_text(size=14)) + 
+    theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank()) + 
+    theme(legend.title = element_blank())+ 
+    theme(legend.position='none')+
+    theme(plot.title = element_text(hjust = 0.5))+
+    labs(title= "", y="Bacterial load (log10)", x="")
+
+GP.ord <- ordinate(physeq.r, "PCoA", "unifrac")
+data1<- plot_ordination(physeq.r, GP.ord, color="bac")
+data2 <- data1$data
+p4 <- ggscatter(data2, x= "Axis.1", y = "Axis.2", 
+                color = "bac", palette = col2,
+                ellipse = TRUE, size = 2.5, ellipse.level = 0.3,
+                mean.point = TRUE, star.plot = TRUE,  
+                ggtheme = theme_minimal(),
+                rug = FALSE)+
+    xlab(data1[["labels"]][["x"]]) + ylab(data1[["labels"]][["y"]])+
+    theme(axis.title.x = element_text(size = 16,
+                                      face = "bold", 
+                                      vjust = 0.5, 
+                                      hjust = 0.5))+
+    theme(axis.title.y = element_text(size = 16,
+                                      face = "bold", 
+                                      vjust = 0.5, 
+                                      hjust = 0.5))+
+    theme_bw()
+
+meta <- meta(physeq.r)
+dis_bray.f<- phyloseq::distance(physeq.r, "unifrac")
+set.seed(002)
+adon.results<-adonis2(dis_bray.f~ meta$bac, perm=999)
+
+meta$reads <- colSums(physeq.great@otu_table)
+p5 <- ggplot(meta, aes(x = log10(load), y = log10(reads))) +
+    theme_classic()+
+    geom_point(alpha=0.8, size = 2)+
+    geom_smooth(size=1, method =lm )+ 
+    theme(axis.text.x =element_text(size=12), axis.text.y = element_text(size=12)) +
+    theme(legend.title = element_blank())+ 
+    theme(title=element_text(size=14,color="#4F4F4F"))+
+    theme(legend.position="top")+
+    stat_cor(method = "spearman", color = "black")+
+    labs(x= "Bacterial load (log10)", y="Reads count (log10)")
+
+p3 + p5 + p4 + p1 + p2
+
+ani <- read.ANI(file = "ANI_pairwise.txt")
+fastani <- data.frame(ani@query, ani@reference, ani@ANI)
+colnames(fastani) <- c("query", "reference", "ANI")
+s <- dcast(fastani, formula <- query~reference, value.var = "ANI", fill = min(ani@ANI))
+rownames(s) <- s$query
+s <- as.matrix(s[ , !(colnames(s) == "query")])
+ani@ANI <- melt(s)$value
+ani@query <- as.character(melt(s)$Var1)
+ani@reference <- as.character(melt(s)$Var2)
+h <- ANI.histogram(bactaxRObject = ani, bindwidth = 0.1)
+dend <- ANI.dendrogram(bactaxRObject = ani, ANI_threshold = 95, xline = c(4,5,6,7.5), xlinecol = c("#ffc425", "#f37735", "deeppink4", "black"), label_size = 0.5)
+
+
+
+```
+
+
+
+## Figure 1A
+
+```{r}
+
+setwd("E:/methy")
+# load(file = "query1.rda")
+
+projects = TCGAbiolinks:::getGDCprojects()$project_id
+TCGAs = grep("TCGA", projects, value = T)
+
+ query <- GDCquery(project = TCGAs,
+                   data.category = "DNA Methylation",
+                   data.type = "Methylation Beta Value", 
+                   platform =  "Illumina Human Methylation 450")
+ query_info = getResults(query)
+
+query_info <- read.csv('query_info.csv',header = T, sep = ',',row.names = 1)
+Pair_sample = TCGAquery_MatchedCoupledSampleTypes(query_info$sample.submitter_id,c("NT","TP"))
+
+tcgas<- c("TCGA-BLCA", "TCGA-BRCA", "TCGA-CESC", "TCGA-CHOL", "TCGA-COAD", "TCGA-ESCA", "TCGA-GBM", "TCGA-HNSC", "TCGA-KIRC",
+"TCGA-KIRP", "TCGA-LIHC", "TCGA-LUAD", "TCGA-LUSC", "TCGA-PAAD", "TCGA-PCPG", "TCGA-PRAD", "TCGA-READ", "TCGA-SARC",
+"TCGA-STAD", "TCGA-THCA", "TCGA-THYM", "TCGA-UCEC")
+
+
+for(i in 1:length(tcgas)){
+
+query1 <- GDCquery(project = tcgas[i],
+                    data.category = "DNA Methylation",
+                    data.type = "Methylation Beta Value", 
+                    platform =  "Illumina Human Methylation 450", barcode = Pair_sample)
+
+# GDCdownload(query1,
+#            method = "api",
+#            directory = "GDCdata",
+#            files.per.chunk = 10)
+
+dataPrep <- GDCprepare(query = query1, save = TRUE, save.filename = paste0(tcgas[i],".rda"))
+
+acc.met <- subset(dataPrep, subset = (rowSums(is.na(assay(dataPrep))) == 0))
+
+acc <- TCGAanalyze_DMC(acc.met, save.directory = tcgas[i], plot.filename = paste0(tcgas[i],"_volcano.pdf"), groupCol = "definition", group1 = "Solid Tissue Normal", group2 = "Primary solid Tumor")
+
+}
+
+all <- read.csv('all.csv',header = T, sep = ',')
+all$h <- all$hyper/10
+all$types<-factor(all$types,levels=all$types)
+ggplot(all,aes(x=types,y=h))+
+    geom_bar(aes(fill=factor(h)),width=0.9,stat = 'identity')+
+    coord_polar(theta = 'x',start = 0.2,direction = 1)+
+    ylim(-3,12)+
+    theme(panel.grid=element_blank(),
+          panel.background=element_blank(),
+          axis.title=element_blank(),
+          legend.position = 'none'
+    )
+
+
+# NPC1 
+
+load("GSE62336.rda")
+pD.all <- pData(GSE62336[[1]])
+pD <- pD.all[, c("title", "geo_accession", "tissue:ch1", "characteristics_ch1.2")]
+names(pD)[c(3,4)] <- c("group", "id")
+pD$group <- str_split_fixed(pD$group, " ", n = 2)[,1]
+
+tt <- exprs(GSE62336[[1]]) 
+
+fun2 <- function(x) {
+    x[is.na(x)] <- 0
+    x
+}
+t1 <- t(apply(tt, 1, fun2))
+
+myLoad=champ.filter(beta = t1 ,pd = pD)
+
+group_list=myLoad$pd$group
+
+myDMP <- champ.DMP(beta = myLoad$beta,pheno=group_list)
+myd1 <- myDMP[["normal_to_tumor"]]
+
+
+# NPC2 
+load("GSE52068.rda")
+pD.all <- pData(GSE52068[[1]])
+pD <- pD.all[, c("title", "geo_accession", "characteristics_ch1.2", "characteristics_ch1.1")]
+names(pD)[c(3,4)] <- c("group", "age")
+pD$group <- str_split_fixed(pD$group, " ", n = 5)[,3]
+
+tt <- exprs(GSE52068[[1]]) 
+
+fun2 <- function(x) {
+    x[is.na(x)] <- 0
+    x
+}
+t1 <- t(apply(tt, 1, fun2))
+
+myLoad=champ.filter(beta = t1 ,pd = pD)
+
+group_list=myLoad$pd$group
+
+myDMP2 <- champ.DMP(beta = myLoad$beta, pheno=group_list)
+myd2 <- myDMP2[["nasopharyngeal_to_normal"]]
+
+
+## all
+
+data <-  matrix(0, 24, 3)
+rownames(data) <- c(tcgas, "NPC-GSE62336", "NPC-GSE52068")
+
+for(i in 1:length(tcgas)){
+  
+my <- read.csv(paste0(tcgas[i], "/DMR_results_definition_Solid.Tissue.Normal_Primary.solid.Tumor_pcut_0.01_meancut_0.2.csv"),header = T, sep = ',',row.names = 1)
+hyper <- nrow(subset(my, mean.Solid.Tissue.Normal.minus.mean.Primary.solid.Tumor < -0.2 & p.value.adj.Solid.Tissue.Normal.Primary.solid.Tumor < 0.05))
+hypo <- nrow(subset(my, mean.Solid.Tissue.Normal.minus.mean.Primary.solid.Tumor > 0.2 & p.value.adj.Solid.Tissue.Normal.Primary.solid.Tumor < 0.05))
+data[i,] <- c(hyper, hypo, hyper+hypo)
+
+}
+data[23,] <- c(
+nrow(subset(myd1, deltaBeta > 0.2 & adj.P.Val < 0.05)),
+nrow(subset(myd1, deltaBeta < -0.2 & adj.P.Val < 0.05)),
+nrow(subset(myd1, deltaBeta < -0.2 & adj.P.Val < 0.05))+nrow(subset(myd1, deltaBeta > 0.2 & adj.P.Val < 0.05))
+)
+
+data[24,] <- c(
+nrow(subset(myd2, deltaBeta < -0.2 & adj.P.Val < 0.05)),
+nrow(subset(myd2, deltaBeta > 0.2 & adj.P.Val < 0.05)),
+nrow(subset(myd2, deltaBeta < -0.2 & adj.P.Val < 0.05))+nrow(subset(myd2, deltaBeta > 0.2 & adj.P.Val < 0.05))
+)
+
+data <- as.data.frame(data)
+colnames(data) <- c("hyper", "hypo", "total")
+data$per <- round(data$hyper/data$total,2)
+data$po <- round(data$hypo/data$total,2)
+data1 <- na.omit(data)
+dat <- as.data.frame(t(data1[,c(4,5)]))
+dat <- cbind(c("hyper", "hypo"), dat)
+names(dat)[1] <- "obj" 
+# dat <-  dat[, c("obj", rownames(data)[order(data$per)])]
+
+ggradar(dat, base.size = 12,axis.label.size = 5,grid.label.size = 5,
+        values.radar = c("0%","80%", "100%"),
+        grid.max = 1.01,grid.mid = 0.81,grid.min = 0.1,
+        background.circle.colour = 'grey80',
+        gridline.min.colour = 'grey80',
+        gridline.mid.colour = 'grey80',
+        gridline.max.colour = 'black',
+        gridline.min.linetype = 'solid',
+        group.colours = c("#e07680", "#84b7a2"),
+        plot.extent.x.sf = 1.2)
+
+```
+
+
+## Figure 1B
+
+```{r}
+
+setwd("D:/microbiome and methylation")
+ testDir = "D:/microbiome and methylation/EPIC.rawdata"
+ myLoad <- champ.load(testDir, arraytype = 'EPIC') 
+ 
+# setwd("C:/Users/lihui/Desktop/NB202305191532-850K甲基化芯片检测报告-20230619-乔老师/")
+# testDir = "C:/Users/lihui/Desktop/NB202305191532-850K甲基化芯片检测报告-20230619-乔老师/NB202305191532-RAW/206702470091"
+# myLoad <- champ.load(testDir, arraytype = 'EPIC') 
+# champ.QC()
+# myNorm <- champ.norm(beta=myLoad$beta,arraytype="EPIC",cores=6)
+## champ.SVD(beta=myNorm,pd=myLoad$pd[,c(4,7,10)])
+## myCombat <- champ.runCombat(beta=myNorm,pd=myLoad$pd,batchname=c("Sentrix.ID"))
+# myDMP <- champ.DMP(beta = myNorm,pheno=myLoad$pd$Sample_Group)
+## DMP.GUI(DMP=myDMP[[1]],beta=myCombat,pheno=myLoad$pd$Sample_Group)
+
+# 
+myCombat <- read.csv("CHAMP_Normalization/myCombat.csv",header = T, sep = ',',row.names = 1)
+myDMP <- read.csv("CHAMP_diff/DMP.diff.csv",header = T, sep = ',',row.names = 1)
+
+mydata <- myCombat
+mydata[mydata>0.2]=1
+mydata[mydata<0.3]=0
+
+
+myCombat1 <- myCombat[rownames(myDMP),]
+High <- rowMeans(myCombat1[,myLoad$pd$Sample_Name[which(myLoad$pd$Sample_Group == "High")]])
+Low <- rowMeans(myCombat1[,myLoad$pd$Sample_Name[which(myLoad$pd$Sample_Group == "Low")]])
+
+data.all <- as.data.frame(cbind(High, Low))
+ggplot(data = data.all, mapping = aes(x = High,
+                                  y = Low)) + 
+    geom_pointdensity() + #密度散点图（geom_pointdensity）
+    scale_color_viridis() + 
+    xlab("High") + 
+    theme(axis.title.x = element_text(size = 16,
+                                      face = "bold", 
+                                      vjust = 0.5, 
+                                      hjust = 0.5))+
+    ylab("Low") + 
+    theme(axis.title.y = element_text(size = 16,
+                                      face = "bold", 
+                                      vjust = 0.5, 
+                                      hjust = 0.5))+
+    theme_bw()+
+    theme(panel.grid.major=element_line(colour=NA),
+          panel.background = element_rect(fill = "transparent",colour = NA),
+          plot.background = element_rect(fill = "transparent",colour = NA),
+          panel.grid.minor = element_blank(),
+          text=element_text(size=12,  family="serif")) +
+    theme(legend.position='none')  +
+    geom_abline(slope =1 , intercept = c(0.2,-0.2), color="red", lty = 4, lwd = 1)
+
+```
+
+
+## Figure 1C
+
+```{r}
+
+##
+
+rnaseq <- read.csv("RNA-seq/RNAseq.diff.csv",header = T, sep = ',',row.names = 1)
+rna <- rnaseq[which(rnaseq$padj < 0.05 & abs(rnaseq$log2FoldChange) > 1 ), ]
+test.data <- subset(myDMP, gene %in% intersect(myDMP$gene, rna$gene_name) & abs(deltaBeta) > 0.2)
+rownames(rna) <- rna$gene_name
+test.data$rna <- rna[test.data$gene,]$log2FoldChange
+test.data$logFC <- -test.data$logFC
+test1 <- test.data[,c(14,1,24)]
+test1$logFC[test1$logFC > 0] = "hypermethylated"
+test1$logFC[test1$logFC < 0] = "hypomethylated"
+test1$rna[test1$rna > 0] = "up"
+test1$rna[test1$rna < 0] = "down"
+table(paste(test1$logFC,test1$rna))
+
+## 
+tsg <- read.table('Human_TSGs.txt', header = T, sep = '\t')
+names <- intersect(tsg$GeneSymbol , test.data$gene)
+diff <- subset(myDMP, gene %in% names)
+mydata <- myCombat[rownames(diff),]
+
+meta <- myLoad$pd
+mydata <- mydata[order(diff$gene),meta$Sample_Name[rev(order(meta$bacload))]]
+
+# 
+annotation_row = test1[rownames(mydata),]
+annotation_row <- na.omit(annotation_row)
+annotation_row <- annotation_row[,c(2,3)]
+colnames(annotation_row) <- c("Methy.", "Gene exp.")
+mydata <- mydata[rownames(annotation_row),]
+annotation_col =  data.frame(meta$Sample_Group)
+rownames(annotation_col) = meta$Sample_Name
+
+ann_colors = list(
+    `Methy.` = c(hypermethylated = "#be262c", hypomethylated = "#2d3090"),
+    `Gene exp.`= c(down = "#006fb9", up = "#b799c6"),
+    meta.Sample_Group = c(High = "#4d4d4d", Low = "#cccccc")
+)
+
+pheatmap::pheatmap(mydata, gaps_col = 12, 
+  show_colnames = FALSE,
+  show_rownames = FALSE, 
+  annotation_col  = annotation_col, 
+  annotation_row  = annotation_row, 
+  annotation_colors = ann_colors, 
+  cluster_cols = FALSE, 
+  border_color = NA, 
+  color = colorRampPalette(colors = c("#98b2d4","white","#d6604d"))(100))
+
+
+```
+
+
+## Figure 1D
+
+```{r}
+
+load('physeq.great.Rdata')
+
+physeq.great1 = tax_glom(physeq.great, "species")
+
+otu <- physeq.great1@otu_table
+tax <- physeq.great1@tax_table
+
+fun1 = function(x) {
+    str_c(x, collapse = ";")
+}
+dat <- apply(tax[,1:7],1, fun1) %>% as.data.frame()
+
+dat$otu_id = row.names(dat)
+colnames(dat)[1] = c("lineage")
+dat = dat %>% dplyr::select(otu_id,lineage) 
+dat2 = cbind(dat,otu)
+meta = sample_data(physeq.great1)
+
+
+obj <- parse_tax_data(dat2,
+                      class_cols = "lineage", # the column that contains taxonomic information
+                      class_sep = ";")
+
+obj$data$tax_abund <- calc_taxon_abund(obj, "tax_data",
+                                       cols = rownames(meta))
+
+obj$data$diff_table <- compare_groups(obj,
+                                      dataset = "tax_abund",
+                                      cols = rownames(meta), # What columns of sample data to use
+                                      groups = meta$bac) # What category each sample is assigned to
+
+
+meta <- read.csv("RNA-seq/rnaseq.metadata.csv",header = T, sep = ',', row.names = 1)
+rownames(meta) <- meta$ids
+meta <- meta[colnames(physeq.great@otu_table@.Data),]
+physeq.great@sam_data$bac <- meta$Group
+physeq.great@sam_data$load <- meta$bacload
+physeq.great <-  prune_taxa(taxa_sums(physeq.great) > 0, physeq.great)
+
+# physeq.great1 <- transform_sample_counts(physeq.great, function(x) x / sum(x) )
+physeq.great.genus = physeq.great1
+diagdds = phyloseq_to_deseq2(physeq.great.genus, ~ bac)
+
+gm_mean <- function(x, na.rm=TRUE){ exp(sum(log(x[x > 0]), na.rm=na.rm) / length(x))}
+geoMeans <- apply(counts(diagdds), 1, gm_mean)
+diagdds <- estimateSizeFactors(diagdds, geoMeans = geoMeans)
+
+diagdds <- DESeq(diagdds, test="Wald", fitType="parametric")
+
+res = results(diagdds, cooksCutoff = FALSE)
+alpha = 1
+sigtab = res[which(res$pvalue < alpha), ]
+sigtab = cbind(as(sigtab, "data.frame"), as(tax_table(physeq.great)[rownames(sigtab), ], "matrix"))
+
+# sigtab <- read.csv("blast.csv",header = T, sep = ',', row.names = 1)
+# Phylum order
+x = tapply(sigtab$baseMean, sigtab$species, function(x) max(x))
+x = sort(x, TRUE)
+sigtab$species = factor(as.character(sigtab$species), levels=names(x))
+
+diff <- obj[["data"]][["diff_table"]]
+diff$taxa <- obj$taxon_names()
+tt <- c(intersect(diff$taxa, c(unique(sigtab$kindom), unique(sigtab$phylum), unique(sigtab$class), unique(sigtab$order), unique(sigtab$family), unique(sigtab$genus))), intersect(diff$taxa, unique(sigtab$species)))
+dat <- obj$taxon_names()
+dat[-which(dat %in% tt)] = ''
+
+x <- rowMeans(obj$data$tax_abund[, -1])
+obj$data$tax_abund$mean<- (x-min(x))/(max(x)-min(x))
+
+set.seed(001)
+heat_tree(obj, 
+          node_label = dat,
+          #node_size = to_plot$data$tax_abund[['High']], 
+          node_size = mean, node_size_range = c(0.01, 0.05), # n_obs is a function that calculates, in this case, the number of OTUs per taxon
+          node_color = log2_median_ratio, # A column from `obj$data$diff_table`
+          node_color_interval = c(-3, 3), # The range of `log2_median_ratio` to display
+          node_color_range = c("cyan", "gray", "tan"), # The color palette used
+          node_size_axis_label = "BaseMean",
+          node_color_axis_label = "Log 2 ratio of median proportions",
+          layout = "davidson-harel", # The primary layout algorithm
+          initial_layout = "reingold-tilford") # The layout algorithm that initializes node locations
+
+
+obj$data$diff_table$log2_median_ratio[obj$data$diff_table$log2_median_ratio == "-Inf"] = -3
+obj$data$diff_table$log2_median_ratio <- -obj$data$diff_table$log2_median_ratio
+
+```
+
+
+
+## Figure 1E
+
+```{r}
+
+otu <- as.data.frame(t(physeq.great.genus@otu_table@.Data))
+res = neutral.fit(otu)
+m = res[[1]][1]
+r2 = res[[1]][3]
+out = res[[2]]
+
+p1 = ggplot()+
+    geom_line(data = out,aes(x=log(p),y=freq.pred),size = 1.2,linetype = 1)+
+    geom_line(data = out,aes(x=log(p),y=Lower),size = 1.2,linetype = 2)+
+    geom_line(data = out,aes(x=log(p),y=Upper),size = 1.2,linetype = 2)+
+    xlab("log10(mean relative abundance)")+ylab("Occurrence frequency")
+
+out2 = mutate(out, group=NA)
+out2$group[out[,2]<out[,4]]="yellow" ##低于下界
+out2$group[out[,2]>out[,5]]="red" ##高于上界
+out2$group[(out[,2]>=out[,4])&(out[,2]<=out[,5])]="green"##中间
+mycols<-c("green","red1","orange")
+
+out$species <- as.character(sigtab[rownames(out),]$species)
+out$sp <- as.character(sigtab[rownames(out),]$species)
+out$sp[which(out$sp != "NA")] <- "A"
+out$sp[-which(out$sp == "A")] <- "B"
+
+p2 <- p1 + geom_point(data = out2,aes(x=log(p),y=freq,color = group),size = 2)+
+    scale_shape_manual(values = c(17,16))+
+    scale_colour_manual(values = mycols)+
+    annotate("text",x=-12.5,y=0.25,label=paste("m = ",round(m,3),sep=''),size=7)+
+    annotate("text",x=-12.5,y=0.3,label=paste("R2 = ",round(r2,3),sep=''),size=7)
+
+plot_theme = theme(panel.background=element_blank(),
+                   panel.grid=element_blank(),
+                   axis.line.x=element_line(size=.5, colour="black"),
+                   axis.line.y=element_line(size=.5, colour="black"),
+                   axis.ticks=element_line(color="black"),
+                   axis.text=element_text(color="black", size=24),
+                   legend.position="none",   ##right
+                   legend.background=element_blank(),
+                   legend.key=element_blank(),
+                   legend.text= element_text(size=24),
+                   text=element_text(family="sans", size=24)
+)
+p3 = p2 + plot_theme;p3
+low = nrow(out2[out2[,6]== "yellow",])
+med = nrow(out2[out2[,6]== "green",])
+high = nrow(out2[out2[,6]== "red",])
+type <- c('med','high','low')
+nums <- c(med,high,low)
+df <- data.frame(type = type, nums = nums)
+label_value <- paste('', round(df$nums/sum(df$nums) * 100, 1), '%', sep = '')
+label_value
+label <- paste(df$type, label_value, sep = ' ')
+
+p4 <- ggplot(data = df, aes(x = 1, y = nums, fill = type)) +
+    geom_bar(stat = 'identity', position = 'stack', width = 0.5)+
+    scale_fill_manual(name='',
+                      labels=c(label[2], label[3], label[1]),
+                      values=c("red1","orange","green"))+
+    coord_polar(theta = 'y')+
+    labs(x = '', y = '', title = '')+
+    theme(axis.text = element_blank())+
+    theme(axis.ticks = element_blank())+
+    theme(legend.position = "right")
+
+p4 = p4+theme(panel.background=element_blank(),
+              panel.grid=element_blank(),
+              legend.background=element_blank(),
+              legend.key=element_blank(),
+              legend.text= element_text(size=24))
+
+g <- p3 + geom_subview(subview = p4 + theme_void(), x=-11.5, y=0.75, w=5, h=5)
+
+```
+
+
+
+## Figure 1F
+
+```{r}
+
+gene <- read.csv("RNA-seq/gene.csv",header = T, sep = ',', row.names = 1)
+meta <- read.csv("RNA-seq/rnaseq.metadata.csv",header = T, sep = ',', row.names = 1)
+rnaseq <- read.csv("RNA-seq/RNAseq.diff.csv",header = T, sep = ',',row.names = 1)
+rna <- rnaseq[which(rnaseq$padj < 0.05 & abs(rnaseq$log2FoldChange) > 1 ), ]
+test.data <- subset(myDMP, gene %in% intersect(myDMP$gene, rna$gene_name) & abs(deltaBeta) > 0.2)
+rownames(rna) <- rna$gene_name
+test.data$rna <- rna[test.data$gene,]$log2FoldChange
+test.data$logFC <- -test.data$logFC
+test1 <- test.data[,c(14,1,24)]
+
+tax <- as.data.frame(physeq.great.genus@tax_table)
+tax1 <- subset(tax,  species %in% c("Fusobacterium nucleatum", "Fusobacterium periodonticum", "Prevotella intermedia", "Prevotella nanceiensis", "Porphyromonas endodontalis"))
+otus <- as.data.frame(physeq.great.genus@otu_table@.Data)
+otus1 <- otus[rownames(tax1),]
+rownames(otus1) <- tax1$species
+otus2 <- otus1
+
+gene1 <- subset(gene, gene_name %in% unique(test1$gene))
+
+rownames(gene1) <- gene1$gene_name
+gene2 <- gene1[,c(3:30)]
+colnames(gene2) <- colnames(gene1[,c(31:58)])
+gene2 <- gene2[,rownames(meta)]
+colnames(gene2) <- meta$ids
+
+data.gene <- as.data.frame(t(gene2))
+data.otus <- as.data.frame(t(otus2))
+
+da <- data.otus[meta$ids,]
+
+my <- myCombat[rownames(test1), meta$meth]
+
+co <- corr.test(t(my), da, method = "spearman")
+co$r[co$p < 0.05 | abs(co$r) < 0.3] = 0
+test <- co$r
+test[test > 0] = 1
+test[test < 0] = -1
+test <- as.data.frame(test)
+table(test$`Fusobacterium nucleatum`)
+table(test$`Fusobacterium periodonticum`)
+table(test$`Prevotella intermedia`)
+table(test$`Prevotella nanceiensis`)
+table(test$`Porphyromonas endodontalis`)
+
+cor <- corr.test(data.gene, da, method = "spearman")
+cor$r[cor$p < 0.05 | abs(cor$r) < 0.3] = 0
+test <- cor$r
+test[test > 0] = 1
+test[test < 0] = -1
+test <- as.data.frame(test)
+table(test$`Fusobacterium nucleatum`)
+table(test$`Fusobacterium periodonticum`)
+table(test$`Prevotella intermedia`)
+table(test$`Prevotella nanceiensis`)
+table(test$`Porphyromonas endodontalis`)
+
+```
+
+
+
+## Figure.3
+
+```{r}
+
+
+setwd("D:/microbiome and methylation/source.data/Figure.S2")
+
+tofig <- read.csv("tofig.csv",header = T, sep = ',')
+data <- subset(tofig, group1 == "down" & group2 == "up")[,c(5,2,1)]
+
+df <- to_lodes_form(data[,1:ncol(data)],
+                    axes = 1:ncol(data),
+                    id = "value")
+col<- rep(c('#2e1f54', '#52057f', '#bf033b', '#f00a36', '#ed3b21', '#ff6908', '#ffc719',
+            '#598c14', '#335238', '#4a8594', '#051736', '#dbe0e3'), 3)
+ggplot(df, aes(x = x, fill=stratum, label=stratum,
+               stratum = stratum, alluvium  = value))+#数据
+    geom_flow(width = 0.3,#连线宽度
+              curve_type = "sine",#曲线形状，有linear、cubic、quintic、sine、arctangent、sigmoid几种类型可供调整
+              alpha = 0.5,#透明度
+              color = 'white',#间隔颜色
+              size = 0.1)+#间隔宽度
+    geom_stratum(width = 0.28)+#图中方块的宽度
+    #scale_fill_manual(values = col)+
+    geom_text(stat = 'stratum', size = 2, color = 'black')+
+    theme_void()+#主题（无轴及网格线）
+    theme(legend.position = 'none')#去除图例
+
+```
+
+
+
+```{r}
+
+setwd("C:/Users/lihui/Desktop/NB202305191532-850K甲基化芯片检测报告-20230619-乔老师/")
+testDir = "C:/Users/lihui/Desktop/NB202305191532-850K甲基化芯片检测报告-20230619-乔老师/NB202305191532-RAW/206702470091"
+myLoad <- champ.load(testDir, arraytype = 'EPIC') 
+champ.QC()
+myNorm <- champ.norm(beta=myLoad$beta,arraytype="EPIC",cores=6)
+
+#
+myCombat <- read.csv("3对_myCombat.csv",header = T, sep = ',',row.names = 1)
+myDMP <- read.csv("myDMP.csv",header = T, sep = ',',row.names = 1)
+
+mydata <- myCombat
+mydata[mydata>0.2]=1
+mydata[mydata<0.3]=0
+
+
+myCombat1 <- myCombat[rownames(myDMP),]
+High <- rowMeans(myCombat1[,myLoad$pd$Sample_Name[which(myLoad$pd$Sample_Group == "High")]])
+Low <- rowMeans(myCombat1[,myLoad$pd$Sample_Name[which(myLoad$pd$Sample_Group == "Low")]])
+
+data.all <- as.data.frame(cbind(High, Low))
+ggplot(data = data.all, mapping = aes(x = High,
+                                  y = Low)) + 
+    geom_pointdensity() +
+    scale_color_viridis() + 
+    xlab("High") + 
+    theme(axis.title.x = element_text(size = 16,
+                                      face = "bold", 
+                                      vjust = 0.5, 
+                                      hjust = 0.5))+
+    ylab("Low") + 
+    theme(axis.title.y = element_text(size = 16,
+                                      face = "bold", 
+                                      vjust = 0.5, 
+                                      hjust = 0.5))+
+    theme_bw()+
+    theme(panel.grid.major=element_line(colour=NA),
+          panel.background = element_rect(fill = "transparent",colour = NA),
+          plot.background = element_rect(fill = "transparent",colour = NA),
+          panel.grid.minor = element_blank(),
+          text=element_text(size=12,  family="serif")) +
+    theme(legend.position='none')  +
+    geom_abline(slope =1 , intercept = c(0.2,-0.2), color="red", lty = 4, lwd = 1)
+
+
+
+```
+
+
+## SGOC
+```{r}
+
+gene <- read.csv("RNA-seq/gene.csv",header = T, sep = ',', row.names = 1)
+meta <- read.csv("RNA-seq/rnaseq.metadata.csv",header = T, sep = ',', row.names = 1)
+qh <- subset(gene, gene_type == "protein_coding")
+qh <- qh[, c(1,3:30)]
+index=order(rowMeans(qh[,-1]),decreasing = T)
+expr_ordered=qh[index,]
+keep=!duplicated(expr_ordered$gene_name)
+expr_max_qh=expr_ordered[keep,]
+rownames(expr_max_qh) <- expr_max_qh$gene_name
+expr_max_qh <- expr_max_qh[,-1]
+colnames(expr_max_qh) <- colnames(gene[,31:58])
+expr_max_qh <- expr_max_qh[,rownames(meta)]
+
+data.otus <- read.csv("RNA-seq/data.otus.csv",header = T, sep = ',', row.names = 1)
+otus <- data.otus[,c("Prevotella intermedia", "Porphyromonas endodontalis", "Prevotella nanceiensis", "Fusobacterium nucleatum", "Fusobacterium periodonticum")]
+otus <- otus[meta$ids,]
+rownames(otus) <- rownames(meta)
+expr_max_qh <- expr_max_qh[,rownames(otus)]
+cor <- corr.test(t(expr_max_qh), otus$`Prevotella intermedia`, method = "spearman")
+
+geneList <- cor$r
+names(geneList) <- rownames(cor$r)
+geneList=sort(geneList,decreasing = T)
+
+h_gmt <- read.gmt("D:/microbiome and methylation/RNA-seq/SGOC.gmt")
+set.seed(001)
+gsea1 <- GSEA(geneList,
+              TERM2GENE = h_gmt,
+              pvalueCutoff = 0.05,
+              pAdjustMethod = "BH") #GSEA分析
+gseaplot2(gsea1, 1, pvalue_table = TRUE)
+
+
+
+pi3.deg <- read.csv("D:/microbiome and methylation/Pi体外处理-3对-NB202211041623-转录组测序分析报告-20221118/4-Differentially_expressed_analysis/4.1-Differentially_expressed_genes/SUNE1_Pi_vs_SUNE1_control/Pi3.DEG.csv",header = T, sep = ',', row.names = 1)
+pi3 <- subset(pi3.deg, Symbol != "")
+
+
+geneList <- pi3$logFC
+names(geneList) <- pi3$Symbol
+geneList=sort(geneList,decreasing = T)
+
+set.seed(003)
+gsea <- GSEA(geneList,
+             TERM2GENE = h_gmt,
+             pvalueCutoff = 1,
+             pAdjustMethod = "BH") #GSEA分析
+
+
+```
